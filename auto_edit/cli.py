@@ -13,6 +13,7 @@ from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from auto_edit import pipeline as pl
@@ -1260,7 +1261,8 @@ def serve(
     try:
         app_ = create_app()
     except RuntimeError as exc:
-        console.print(f"[red]{exc}[/red]")
+        # escape: the hint names the `[api]` extra, which Rich would eat as markup
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(f"[cyan]auto-edit API[/cyan] → http://{host}:{port}  [dim](Ctrl+C to stop)[/dim]")
     console.print(f"[dim]Library root:[/dim] {(Path.cwd() / 'workspace')}")
