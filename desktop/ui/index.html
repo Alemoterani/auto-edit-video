@@ -42,7 +42,8 @@
       </header>
 
       <div class="banner" data-offline-banner hidden>
-        <b>Motor offline.</b> Rode <code class="mono">auto-edit serve</code> no terminal e clique em
+        <b>Motor offline.</b> O app inicia o motor sozinho; se não subir, rode
+        <code class="mono">auto-edit serve</code> no terminal e clique em
         <a data-retry>tentar de novo</a>. (mostrando exemplos abaixo)
       </div>
 
@@ -88,6 +89,7 @@
               <span class="pick-path mono" id="pick-path">—</span>
               <button class="btn btn-sm" id="pick-reload" type="button">recarregar</button>
             </div>
+            <input class="pick-search" id="pick-search" type="search" placeholder="buscar nesta pasta…" autocomplete="off" spellcheck="false" />
             <div class="pick-list" id="pick-list"></div>
           </div>
 
@@ -279,6 +281,7 @@
           <div class="page-title" id="res-title">—</div>
           <div class="page-sub row-inline" id="res-sub"></div>
         </div>
+        <a class="btn btn-primary" id="btn-res-shorts" hidden>Gerar shorts</a>
       </header>
 
       <div class="content">
@@ -318,6 +321,67 @@
             <div id="res-thumbtext" class="meta-field" hidden></div>
             <div id="res-nometa" class="empty small" hidden>Sem metadata ainda — ela sai no fim do pipeline.</div>
           </section>
+        </div>
+      </div>
+    </main>
+
+    <!-- Shorts -->
+    <main class="main" data-screen="shorts" hidden>
+      <header class="topbar">
+        <button class="btn btn-icon" id="btn-sh-back" title="Voltar">&larr;</button>
+        <div class="titles">
+          <div class="page-title" id="sh-title">Shorts</div>
+          <div class="page-sub row-inline" id="sh-sub"></div>
+        </div>
+        <button class="btn" id="btn-sh-find" hidden>Buscar de novo</button>
+        <button class="btn btn-primary" id="btn-sh-cut" disabled>Cortar selecionados</button>
+      </header>
+
+      <div class="content shorts">
+        <div id="sh-error" class="banner err" hidden></div>
+
+        <div id="sh-ineligible" class="empty" hidden></div>
+
+        <section id="sh-start" class="card sh-start" hidden>
+          <h2>Encontrar trechos que viram short</h2>
+          <p>O agente <code class="mono">clipper</code> lê a transcrição do vídeo editado e propõe
+            trechos que se sustentam sozinhos, com nota e gancho. Você escolhe quais cortar.</p>
+          <button class="btn btn-primary" id="btn-sh-start">Encontrar candidatos</button>
+        </section>
+
+        <section id="sh-running" class="card" hidden>
+          <div class="card-head">
+            <div>
+              <h2>Procurando candidatos…</h2>
+              <p>o <code class="mono">clipper</code> está lendo a transcrição — leva um ou dois minutos.</p>
+            </div>
+          </div>
+          <pre class="log mono" id="sh-log"></pre>
+        </section>
+
+        <div id="sh-body" hidden>
+          <div class="sh-toolbar">
+            <span>duração máxima</span>
+            <input class="input mono" id="sh-maxdur" type="number" min="5" step="5" value="90" />
+            <span>s</span>
+            <span class="grow"></span>
+            <span class="dim" id="sh-hint">marque os trechos e clique em cortar — cada um vira um short com legenda</span>
+          </div>
+
+          <div class="sh-grid">
+            <div class="card sh-player">
+              <video id="sh-video" class="player" controls preload="metadata"></video>
+              <div class="sh-now mono" id="sh-now">clique em ▶ num candidato pra assistir o trecho</div>
+            </div>
+            <div>
+              <div class="sh-list" id="sh-list"></div>
+              <div id="sh-none" class="empty" hidden></div>
+              <details id="sh-rejected" class="sh-rejected" hidden>
+                <summary>Descartados pela validação (<span id="sh-rej-count">0</span>)</summary>
+                <ul id="sh-rej-list"></ul>
+              </details>
+            </div>
+          </div>
         </div>
       </div>
     </main>

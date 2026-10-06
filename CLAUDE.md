@@ -141,6 +141,9 @@ GET  /api/videos/<id>/result      # metadata + arquivos finais
 GET  /api/videos/<id>/file/<kind> # video | thumbnail | captions | notes
 POST /api/edit                    # {video_path, type, context, language, overlays_dir, ...}
 POST /api/videos/<id>/resume      # {from_stage}
+GET  /api/videos/<id>/shorts      # candidatos a short de um long pronto
+POST /api/videos/<id>/shorts      # {max_dur} roda o clipper (job + SSE)
+POST /api/videos/<id>/shorts/cut  # {pick: [1, 3]} semeia os _shortN e corta em fila
 GET  /api/jobs/<job_id>/events    # progresso ao vivo (SSE: log/stage/done/error)
 GET  /api/videos/<id>/events      # SSE do job atual daquele vídeo
 ```

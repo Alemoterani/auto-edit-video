@@ -5,7 +5,10 @@ import * as api from "./api.js";
 import { el, escapeHtml, humanSize, setEngine } from "./shell.js";
 import { go } from "./router.js";
 
-const state = { dir: null, selected: null, loaded: false, busy: false };
+const state = { dir: null, data: null, selected: null, loaded: false, busy: false };
+
+// Case- and accent-insensitive, so "cinque" finds "Cinque Terre" and "balanca" finds "balança".
+const fold = (s) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
 function fileRowHTML(v) {
   const when = v.modified ? new Date(v.modified).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "";
@@ -42,11 +45,27 @@ async function loadDir(dir) {
   el("pick-path").textContent = data.dir;
   el("pick-up").disabled = !data.parent;
   el("pick-up").dataset.dir = data.parent || "";
+  state.data = data;
+  el("pick-search").value = "";
+  renderList();
+}
 
-  const items = [...data.dirs.map(dirRowHTML), ...data.videos.map(fileRowHTML)];
-  list.innerHTML = items.length
-    ? items.join("")
-    : `<div class="pick-empty">${data.exists ? "nenhum vídeo nesta pasta." : "esta pasta não existe."}</div>`;
+// The matches for the search box, folders first.
+function matches() {
+  const { dirs, videos } = state.data;
+  const q = fold(el("pick-search").value.trim());
+  const hit = (x) => !q || fold(x.name).includes(q);
+  return { dirs: dirs.filter(hit), videos: videos.filter(hit) };
+}
+
+function renderList() {
+  const data = state.data;
+  if (!data) return;
+  const { dirs, videos } = matches();
+  const items = [...dirs.map(dirRowHTML), ...videos.map(fileRowHTML)];
+  let empty = data.exists ? "nenhum vídeo nesta pasta." : "esta pasta não existe.";
+  if (data.dirs.length + data.videos.length) empty = "nada encontrado.";
+  el("pick-list").innerHTML = items.length ? items.join("") : `<div class="pick-empty">${empty}</div>`;
 }
 
 function select(path) {
@@ -126,6 +145,16 @@ function wire() {
     if (dir) loadDir(dir);
   });
   el("pick-reload").addEventListener("click", () => loadDir(state.dir));
+  el("pick-search").addEventListener("input", renderList);
+  // Enter opens the first folder match (or picks the video, if that's all there is); Esc clears.
+  el("pick-search").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.currentTarget.value = ""; renderList(); return; }
+    if (e.key !== "Enter" || !state.data) return;
+    e.preventDefault();
+    const { dirs, videos } = matches();
+    if (dirs.length) loadDir(dirs[0].path);
+    else if (videos.length) select(videos[0].path);
+  });
   el("manual-path").addEventListener("input", () => {
     if (el("manual-path").value.trim()) select(null);
     validate();

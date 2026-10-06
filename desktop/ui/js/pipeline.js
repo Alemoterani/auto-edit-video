@@ -53,7 +53,7 @@ function renderHead(d) {
   el("pipe-sub").innerHTML =
     `<span class="badge ${d.type === "short" ? "short" : "long"}">${d.type || "?"}</span>` +
     `<span class="chip ${d.status}"><span class="d"></span>${
-      { done: "Pronto", running: "Rodando", failed: "Falhou", idle: "Parado" }[d.status] || d.status
+      { done: "Pronto", running: "Rodando", failed: "Falhou", idle: "Parado", queued: "Na fila" }[d.status] || d.status
     }</span>` +
     `<span class="mono dim">iteração ${d.iteration || 1}/${d.max_iterations || 3}</span>` +
     (d.estimated_tokens ? `<span class="mono dim">~${Number(d.estimated_tokens).toLocaleString("pt-BR")} tokens</span>` : "");

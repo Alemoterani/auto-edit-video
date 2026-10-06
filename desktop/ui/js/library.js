@@ -10,6 +10,10 @@ const streams = new Map(); // video id -> EventSource
 const noStream = new Set(); // ids whose SSE 404'd (status says running, engine has no live job)
 let timer = null;
 let offline = false; // sample rows are on screen: they have no workspace to open
+let quick = null;
+// The desktop shell starts the engine on launch and it takes a few seconds to
+// answer, so while offline early on, re-check every second instead of every 5.
+const BOOT_UNTIL = Date.now() + 20000;
 
 // Shown only when the engine is unreachable, so you still see the design.
 const SAMPLE = [
@@ -40,7 +44,7 @@ function dots(v) {
 }
 
 function chip(status) {
-  const label = { done: "Pronto", running: "Rodando", failed: "Falhou", idle: "Parado" }[status] || status;
+  const label = { done: "Pronto", running: "Rodando", failed: "Falhou", idle: "Parado", queued: "Na fila" }[status] || status;
   return `<span class="chip ${status}"><span class="d"></span>${label}</span>`;
 }
 
@@ -53,7 +57,7 @@ function rowHTML(v) {
       <div class="thumb"></div>
       <div style="min-width:0">
         <div class="vid-name">${escapeHtml(v.video_name || v.id)}</div>
-        <div class="vid-meta mono" data-meta>${v.language || ""}${v.output ? " · output pronto" : ""}</div>
+        <div class="vid-meta mono" data-meta>${v.language || ""}${v.derived_from ? ` · short de ${escapeHtml(v.derived_from)}` : ""}${v.output ? " · output pronto" : ""}</div>
       </div>
     </div>
     <div>${typeBadge(v.type)}</div>
@@ -111,6 +115,8 @@ export async function refresh() {
   const ok = await api.health();
   setEngine(ok);
   offline = !ok;
+  clearTimeout(quick);
+  if (!ok && Date.now() < BOOT_UNTIL) quick = setTimeout(refresh, 1000);
   if (!ok) { render(SAMPLE); return; }
   try { render(await api.library()); }
   catch { setEngine(false); offline = true; render(SAMPLE); }
@@ -133,6 +139,7 @@ export default {
   },
   unmount() {
     clearInterval(timer);
+    clearTimeout(quick);
     timer = null;
     [...streams.keys()].forEach(close);
     noStream.clear();

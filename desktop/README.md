@@ -5,18 +5,33 @@ Cliente **fino** (Tauri v2) da UI do auto-edit, consumindo a API headless do
 e dispara.
 
 **Telas:** Biblioteca (lista + progresso ao vivo por SSE), Novo edit (escolhe o
-vídeo na pasta de entrada e inicia o pipeline), Pipeline ao vivo (stages, log do
-`ralph.sh` em tempo real e retomar a partir de um stage), Revisar cortes (os
-trechos mantidos com o que é dito em cada um; desmarcar e salvar reescreve o
-`reviewed_plan.json`) e Resultado (o vídeo pronto tocando, a thumbnail e o texto
-de publicação pronto pra copiar).
+vídeo na pasta de entrada, com busca, e inicia o pipeline), Pipeline ao vivo
+(stages, log do `ralph.sh` em tempo real e retomar a partir de um stage),
+Revisar cortes (os trechos mantidos com o que é dito em cada um; desmarcar e
+salvar reescreve o `reviewed_plan.json`), Resultado (o vídeo pronto tocando, a
+thumbnail e o texto de publicação pronto pra copiar) e Shorts (a partir de um
+long pronto: o `clipper` propõe trechos, você assiste cada um no player, marca e
+corta — cada marcado vira um `<nome>_shortN` que roda em fila).
 
-## 1. Suba o motor (em um terminal)
+## 1. O motor
+
+O app nativo (Tauri) **sobe o motor sozinho** ao abrir e o encerra ao fechar.
+Se já houver um `auto-edit serve` ouvindo na 8760, ele é reaproveitado (e não é
+encerrado). O log do motor vai pra pasta de logs do app (`engine.log`; no macOS,
+`~/Library/Logs/dev.gabul.autoedit/`).
+
+Ele procura o executável `auto-edit` em: `AUTO_EDIT_BIN`, `.venv` do repo,
+`~/.local/bin`, `~/.nix-profile/bin`, Homebrew e, por fim, no PATH do seu shell
+de login. Em dev o motor roda na raiz do repo (mesmos workspaces do CLI); num
+app empacotado, em `~/.auto-edit` (troque com `AUTO_EDIT_CWD`).
+
+Só precisa do extra da API instalado:
 
 ```bash
-pip install "auto-edit-video[api]"   # ou: pip install flask
-auto-edit serve                       # http://127.0.0.1:8760
+pip install "auto-edit-video[api]"   # ou: uv pip install -e ".[api]"
 ```
+
+No preview pelo navegador (2a), o motor não sobe sozinho: rode `auto-edit serve`.
 
 ## 2a. Preview instantâneo (sem Rust) — pra "ver como fica" já
 
@@ -73,7 +88,7 @@ desktop/
 │       ├── new-edit.js # tela Novo edit (file picker + form)
 │       ├── pipeline.js # tela Pipeline ao vivo (stages + log SSE + resume)
 │       ├── cuts.js     # tela Revisar cortes (edita o plano e recorta)
-│       └── result.js   # tela Resultado (player, thumbnail e metadata)
+│       ├── result.js   # tela Resultado (player, thumbnail e metadata)
 ├── src-tauri/          # shell Tauri v2 (Rust)
 │   ├── Cargo.toml  build.rs  tauri.conf.json
 │   ├── src/main.rs
@@ -85,4 +100,5 @@ desktop/
 ## Próximos passos
 
 - Publicar direto pelo app (o `auto-edit insights auth youtube` já existe no CLI).
-- Empacotar o `auto-edit serve` como *sidecar* do Tauri (hoje roda à parte).
+- Empacotar o `auto-edit serve` como *sidecar* do Tauri (hoje o app sobe o CLI
+  instalado na máquina).

@@ -16,10 +16,14 @@ Endpoints
     PUT  /api/videos/<id>/plan       {kept_segments: [{start, end, summary?}]}
     GET  /api/videos/<id>/result     (metadata + arquivos finais)
     GET  /api/videos/<id>/file/<kind>  (video | thumbnail | captions | notes)
+    POST /api/videos/<id>/open/<kind>  {reveal}  abre no app padrão / no Finder
     POST /api/edit                 {video_path, type, context, language,
                                     whisper_model, max_iterations, dry_run,
                                     overlays_dir}
     POST /api/videos/<id>/resume   {from_stage, overlays_dir}
+    GET  /api/videos/<id>/shorts?max_dur=   (candidatos a short de um long pronto)
+    POST /api/videos/<id>/shorts       {max_dur}  roda o clipper (job, SSE)
+    POST /api/videos/<id>/shorts/cut   {pick: [1, 3], max_dur}  corta em fila
     GET  /api/jobs/<job_id>/events        (SSE)
     GET  /api/videos/<id>/events          (SSE, that video's current job)
 """
@@ -29,6 +33,7 @@ import json
 from typing import Iterator
 
 from auto_edit import engine
+from auto_edit import shorts as sh
 
 
 def _sse(events: Iterator[dict]) -> Iterator[str]:
@@ -68,7 +73,9 @@ def create_app(jobs: engine.JobManager | None = None):
         return jsonify(
             {
                 "videos": engine.list_library(
-                    active_ids=jobs.active_ids(), failed_ids=jobs.failed_ids()
+                    active_ids=jobs.active_ids(),
+                    failed_ids=jobs.failed_ids(),
+                    queued_ids=jobs.queued_ids(),
                 )
             }
         )
@@ -84,6 +91,7 @@ def create_app(jobs: engine.JobManager | None = None):
             video_id,
             active=video_id in jobs.active_ids(),
             failed=video_id in jobs.failed_ids(),
+            queued=video_id in jobs.queued_ids(),
         )
         if data is None:
             return jsonify({"error": "not_found", "id": video_id}), 404
@@ -130,6 +138,15 @@ def create_app(jobs: engine.JobManager | None = None):
             download_name=path.name,
         )
 
+    @app.post("/api/videos/<video_id>/open/<kind>")
+    def open_file(video_id: str, kind: str):
+        """Open an artifact on this machine (default app, or `reveal` in the folder)."""
+        body = request.get_json(silent=True) or {}
+        path = engine.open_artifact(video_id, kind, reveal=bool(body.get("reveal")))
+        if path is None:
+            return jsonify({"error": "not_found", "id": video_id, "kind": kind}), 404
+        return jsonify({"opened": str(path)})
+
     @app.post("/api/edit")
     def start_edit():
         body = request.get_json(silent=True) or {}
@@ -165,6 +182,48 @@ def create_app(jobs: engine.JobManager | None = None):
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         return jsonify({"job_id": job.id, "video_id": job.video_id}), 202
+
+    def _max_dur(raw) -> float:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return sh.DEFAULT_MAX_DURATION
+        return value if value > 0 else sh.DEFAULT_MAX_DURATION
+
+    @app.get("/api/videos/<video_id>/shorts")
+    def shorts_state(video_id: str):
+        data = engine.shorts_state(video_id, max_duration=_max_dur(request.args.get("max_dur")))
+        if data is None:
+            return jsonify({"error": "not_found", "id": video_id}), 404
+        job = jobs.job_for_video(video_id)
+        if job is not None and job.kind == "shorts":
+            data["job"] = {"id": job.id, "status": job.status}
+        return jsonify(data)
+
+    @app.post("/api/videos/<video_id>/shorts")
+    def find_shorts(video_id: str):
+        body = request.get_json(silent=True) or {}
+        try:
+            job = jobs.find_shorts(video_id, max_duration=_max_dur(body.get("max_dur")))
+        except FileNotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except sh.ShortsError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"job_id": job.id, "video_id": job.video_id}), 202
+
+    @app.post("/api/videos/<video_id>/shorts/cut")
+    def cut_shorts(video_id: str):
+        body = request.get_json(silent=True) or {}
+        pick = body.get("pick")
+        if not isinstance(pick, list):
+            return jsonify({"error": "pick precisa ser uma lista, ex: [1, 3]"}), 400
+        try:
+            ids = jobs.cut_shorts(video_id, pick, max_duration=_max_dur(body.get("max_dur")))
+        except FileNotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except (sh.ShortsError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"shorts": ids}), 202
 
     @app.get("/api/jobs/<job_id>/events")
     def job_events(job_id: str):

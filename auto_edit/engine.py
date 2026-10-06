@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ from queue import Queue
 from typing import Callable, Iterator
 
 from auto_edit import pipeline as pl
+from auto_edit import shorts as sh
 from auto_edit.workspace import init_workspace, workspace_root
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -104,13 +106,16 @@ def browse(directory: str | None = None) -> dict:
 # ── Status derivation ─────────────────────────────────────────────────────────
 
 
-def overall_status(pipeline: dict, active: bool = False, failed: bool = False) -> str:
-    """Collapse a pipeline.json into one status: running | done | failed | idle.
+def overall_status(
+    pipeline: dict, active: bool = False, failed: bool = False, queued: bool = False
+) -> str:
+    """Collapse a pipeline.json into one status: running | done | failed | queued | idle.
 
     `active` is True while the engine has a live job for this workspace — the
     pipeline.json alone can't tell "paused between runs" from "in progress".
     `failed` is True when the last job for it died: a run that blows up before
-    ralph marks a stage would otherwise read as a calm "idle".
+    ralph marks a stage would otherwise read as a calm "idle". `queued` is True
+    while it waits its turn behind another job (shorts are cut one at a time).
     """
     stages = pipeline.get("stages", {})
     if pipeline.get("current_stage") == "done":
@@ -119,6 +124,8 @@ def overall_status(pipeline: dict, active: bool = False, failed: bool = False) -
         return "failed"
     if active or any(s.get("status") == "running" for s in stages.values()):
         return "running"
+    if queued:
+        return "queued"
     return "idle"
 
 
@@ -139,7 +146,7 @@ def _read_json(path: Path) -> dict | list | None:
 # ── Read models ───────────────────────────────────────────────────────────────
 
 
-def summarize(ws: Path, active: bool = False, failed: bool = False) -> dict:
+def summarize(ws: Path, active: bool = False, failed: bool = False, queued: bool = False) -> dict:
     """One-line summary of a workspace for the library list."""
     p = pl.load(ws)
     tokens = (p.get("token_stats") or {}).get("total_estimated_tokens")
@@ -151,7 +158,8 @@ def summarize(ws: Path, active: bool = False, failed: bool = False) -> dict:
         "type": p.get("type"),
         "language": p.get("language"),
         "current_stage": p.get("current_stage"),
-        "status": overall_status(p, active=active, failed=failed),
+        "status": overall_status(p, active=active, failed=failed, queued=queued),
+        "derived_from": Path(p["derived_from"]).name if p.get("derived_from") else None,
         "iteration": p.get("iteration"),
         "max_iterations": p.get("max_iterations"),
         "plan_id": p.get("plan_id"),
@@ -165,10 +173,12 @@ def summarize(ws: Path, active: bool = False, failed: bool = False) -> dict:
 def list_library(
     active_ids: set[str] | None = None,
     failed_ids: set[str] | None = None,
+    queued_ids: set[str] | None = None,
 ) -> list[dict]:
     """Every workspace under the library root, newest first."""
     active_ids = active_ids or set()
     failed_ids = failed_ids or set()
+    queued_ids = queued_ids or set()
     root = library_root()
     if not root.is_dir():
         return []
@@ -177,7 +187,12 @@ def list_library(
         ws = pj.parent
         try:
             items.append(
-                summarize(ws, active=ws.name in active_ids, failed=ws.name in failed_ids)
+                summarize(
+                    ws,
+                    active=ws.name in active_ids,
+                    failed=ws.name in failed_ids,
+                    queued=ws.name in queued_ids,
+                )
             )
         except (FileNotFoundError, ValueError):
             continue
@@ -185,13 +200,15 @@ def list_library(
     return items
 
 
-def detail(video_id: str, active: bool = False, failed: bool = False) -> dict | None:
+def detail(
+    video_id: str, active: bool = False, failed: bool = False, queued: bool = False
+) -> dict | None:
     """Full status for one workspace, plus plan/metadata summaries when present."""
     ws = library_root() / video_id
     if not (ws / "pipeline.json").exists():
         return None
     p = pl.load(ws)
-    data = summarize(ws, active=active, failed=failed)
+    data = summarize(ws, active=active, failed=failed, queued=queued)
     data["context"] = p.get("context")
     data["stage_detail"] = p.get("stages", {})
     data["token_stats"] = p.get("token_stats")
@@ -241,8 +258,36 @@ def artifact_path(video_id: str, kind: str) -> Path | None:
     if not (ws / "pipeline.json").exists():
         return None
     name = pl.load(ws).get("video_name", video_id)
-    candidate = ws.parent / "output" / f"{name}{suffix}"
+    # Absolute: the library root is usually relative ("workspace"), and Flask's
+    # send_file resolves a relative path against the package, not the cwd.
+    candidate = (ws.parent / "output" / f"{name}{suffix}").resolve()
     return candidate if candidate.is_file() else None
+
+
+def open_artifact(
+    video_id: str,
+    kind: str,
+    *,
+    reveal: bool = False,
+    run: Callable[..., object] = subprocess.Popen,
+) -> Path | None:
+    """Open a finished artifact with the OS: its default app, or the file
+    manager with the file selected (`reveal`). None when it isn't there.
+
+    The engine runs on the user's own machine, so this is how a frontend gets
+    a file onto the screen — a webview (Tauri) won't follow a download link.
+    """
+    path = artifact_path(video_id, kind)
+    if path is None:
+        return None
+    if sys.platform == "darwin":
+        cmd = ["open", "-R", str(path)] if reveal else ["open", str(path)]
+    elif sys.platform == "win32":
+        cmd = ["explorer", f"/select,{path}"] if reveal else ["cmd", "/c", "start", "", str(path)]
+    else:  # no portable "select in folder" on Linux: open the folder instead
+        cmd = ["xdg-open", str(path.parent if reveal else path)]
+    run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return path
 
 
 def result(video_id: str) -> dict | None:
@@ -406,6 +451,85 @@ def write_plan(video_id: str, kept_segments: list[dict]) -> dict:
     return read_plan(video_id) or {}
 
 
+# ── Shorts derivados (read model) ─────────────────────────────────────────────
+
+
+def shorts_state(video_id: str, max_duration: float = sh.DEFAULT_MAX_DURATION) -> dict | None:
+    """The shorts candidates of a finished long, as the "Shorts" screen shows them.
+
+    Mirrors `auto-edit shorts <video>` without --pick: same validation, same
+    score order, same numbering. The number a candidate gets here is the one
+    `cut` takes and the `_shortN` suffix of its workspace. `eligible` is False
+    (with the reason) for anything that isn't a finished long; `has_plan` is
+    False until the clipper ran once.
+    """
+    ws = library_root() / video_id
+    if not (ws / "pipeline.json").exists():
+        return None
+
+    state: dict = {
+        "id": video_id,
+        "eligible": False,
+        "reason": None,
+        "has_plan": False,
+        "max_duration": max_duration,
+        "clips": [],
+        "rejected": [],
+        "notes": "",
+    }
+    try:
+        long_pipeline = sh.require_finished_long(ws)
+        sh.long_source_video(ws)
+    except sh.ShortsError as exc:
+        state["reason"] = str(exc)
+        return state
+    state["eligible"] = True
+
+    if not (ws / sh.CLIPS_PLAN_NAME).exists():
+        return state
+    try:
+        clips, rejected = sh.load_clips_plan(ws, max_duration=max_duration)
+    except (sh.ShortsError, ValueError) as exc:
+        state["reason"] = f"{sh.CLIPS_PLAN_NAME} ilegível: {exc}"
+        return state
+
+    post_cut = _read_json(ws / sh.POST_CUT_NAME)
+    segments = post_cut.get("segments") or [] if isinstance(post_cut, dict) else []
+    overlaps = sh.overlapping_indices(clips)
+
+    items = []
+    for i, clip in enumerate(clips):
+        number = i + 1
+        start, end = float(clip["start"]), float(clip["end"])
+        short_ws = sh.short_workspace_path(ws, long_pipeline, number)
+        existing = None
+        if (short_ws / "pipeline.json").exists():
+            existing = {
+                "id": short_ws.name,
+                "status": overall_status(pl.load(short_ws)),
+                "overwrite_warning": sh.overwrite_warning(ws, long_pipeline, clip, number),
+            }
+        items.append(
+            {
+                "number": number,
+                "start": start,
+                "end": end,
+                "duration": round(end - start, 3),
+                "score": clip.get("score"),
+                "hook": clip.get("hook") or "",
+                "reason": clip.get("reason") or clip.get("why"),
+                "text": _transcript_text(segments, start, end),
+                "overlaps": i in overlaps,
+                "short": existing,
+            }
+        )
+
+    state.update(
+        has_plan=True, clips=items, rejected=rejected, notes=sh.plan_notes(ws)
+    )
+    return state
+
+
 # ── Live job registry ─────────────────────────────────────────────────────────
 
 # An event is a plain dict: {"type": "log"|"stage"|"done"|"error", ...}.
@@ -470,10 +594,22 @@ class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
         self._by_video: dict[str, str] = {}
+        self._queued: set[str] = set()
         self._lock = threading.Lock()
 
     def active_ids(self) -> set[str]:
         return self._ids_with_status("running")
+
+    def queued_ids(self) -> set[str]:
+        """Workspaces seeded and waiting for their turn (shorts cut in a row)."""
+        with self._lock:
+            return set(self._queued)
+
+    def _busy(self, video_id: str) -> bool:
+        if video_id in self.queued_ids():
+            return True
+        job = self.job_for_video(video_id)
+        return job is not None and job.status == "running"
 
     def failed_ids(self) -> set[str]:
         """Videos whose latest job died — the library shows them as failed even
@@ -568,7 +704,151 @@ class JobManager:
         )
 
 
+    def find_shorts(
+        self, video_id: str, *, max_duration: float = sh.DEFAULT_MAX_DURATION
+    ) -> Job:
+        """Run the clipper over a finished long (`auto-edit shorts <video> --replan`).
+
+        Raises FileNotFoundError for an unknown workspace and ShortsError when
+        it isn't a finished long or something is already running on it.
+        """
+        ws = library_root() / video_id
+        if not (ws / "pipeline.json").exists():
+            raise FileNotFoundError(f"no workspace for: {video_id}")
+        long_pipeline = sh.require_finished_long(ws)
+        sh.long_source_video(ws)
+        if self._busy(video_id):
+            raise sh.ShortsError(f"{video_id} já tem um job rodando")
+        return self._spawn(
+            video_id,
+            "shorts",
+            lambda emit: run_clipper(
+                ws, emit=emit, max_duration=max_duration,
+                language=long_pipeline.get("language", "pt"),
+            ),
+        )
+
+    def cut_shorts(
+        self,
+        video_id: str,
+        picks: list[int],
+        *,
+        max_duration: float = sh.DEFAULT_MAX_DURATION,
+    ) -> list[str]:
+        """Seed one `_shortN` workspace per picked candidate and cut them in a row.
+
+        `picks` are the 1-based numbers `shorts_state` shows. Every workspace is
+        seeded up front, so all of them show up in the library right away (as
+        "queued"); they then run one at a time, like the CLI's `--pick`, since
+        each one is an FFmpeg encode plus agent calls. A failed short stops the
+        queue — the rest stay seeded and can be resumed from `execute`.
+        """
+        ws = library_root() / video_id
+        if not (ws / "pipeline.json").exists():
+            raise FileNotFoundError(f"no workspace for: {video_id}")
+        long_pipeline = sh.require_finished_long(ws)
+        clips, _rejected = sh.load_clips_plan(ws, max_duration=max_duration)
+        if not clips:
+            raise sh.ShortsError("nenhum candidato a short pra cortar")
+        try:
+            numbers = sorted({int(n) for n in picks})
+        except (TypeError, ValueError):
+            raise sh.ShortsError("pick precisa ser uma lista de números") from None
+        if not numbers:
+            raise sh.ShortsError("escolha pelo menos um candidato")
+        bad = [n for n in numbers if n < 1 or n > len(clips)]
+        if bad:
+            raise sh.ShortsError(f"fora da faixa: {bad}. Válidos: 1-{len(clips)}")
+
+        targets = [sh.short_workspace_path(ws, long_pipeline, n) for n in numbers]
+        busy = [t.name for t in targets if self._busy(t.name)]
+        if busy:
+            raise sh.ShortsError(f"já rodando: {', '.join(busy)}")
+
+        seeded = [
+            sh.seed_short_workspace(ws, long_pipeline, clips[n - 1], n) for n in numbers
+        ]
+        language = long_pipeline.get("language", "pt")
+        with self._lock:
+            self._queued.update(w.name for w in seeded)
+
+        def _run_queue() -> None:
+            stopped = False
+            for short_ws in seeded:
+                with self._lock:
+                    self._queued.discard(short_ws.name)
+                if stopped:
+                    continue
+                job = self._spawn(
+                    short_ws.name,
+                    "short",
+                    lambda emit, w=short_ws: run_workspace(w, language=language, emit=emit),
+                )
+                for _ev in job.subscribe():  # block until this short is done
+                    pass
+                stopped = job.status == "failed"
+
+        threading.Thread(target=_run_queue, name=f"shorts-{video_id}", daemon=True).start()
+        return [w.name for w in seeded]
+
+
 # ── Pipeline runner (streams ralph.sh) ────────────────────────────────────────
+
+
+def _ralph_env(ralph: Path, language: str) -> dict:
+    env = os.environ.copy()
+    env["AUTO_EDIT_REPO_ROOT"] = str(ralph.parent.resolve())
+    env["AUTO_EDIT_LANGUAGE"] = language
+    env.setdefault("AUTO_EDIT_LLM", "claude")
+    env["PYTHON"] = os.environ.get("PYTHON", sys.executable)
+    return env
+
+
+def run_clipper(
+    ws: Path,
+    *,
+    emit: Emit,
+    max_duration: float = sh.DEFAULT_MAX_DURATION,
+    language: str = "pt",
+    popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+) -> int:
+    """Run the clipper agent over a finished long, writing its clips_plan.json.
+
+    Same invocation as `auto-edit shorts --replan`. Emits log lines, then
+    done/error. `popen` is injectable for tests.
+    """
+    ralph = ralph_path()
+    if not ralph.exists():
+        emit({"type": "error", "message": f"ralph.sh not found at {ralph}"})
+        return 1
+
+    env = _ralph_env(ralph, language)
+    env["AUTO_EDIT_CLIP_MAX_DUR"] = f"{max_duration:g}"
+    proc = popen(
+        [
+            "bash", str(ralph), "--agent", str(ws.resolve()),
+            "clip", str((ws / sh.CLIPS_PLAN_NAME).resolve()),
+            str(ralph.parent / "agents" / "clipper.md"),
+        ],
+        cwd=str(ralph.parent),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    if proc.stdout is not None:
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            if line:
+                emit({"type": "log", "line": line})
+
+    rc = proc.wait()
+    if rc == 0:
+        emit({"type": "done", "status": "done"})
+    else:
+        emit({"type": "error", "status": "failed", "message": "o clipper falhou"})
+    return rc
 
 
 def run_workspace(
@@ -591,11 +871,7 @@ def run_workspace(
         emit({"type": "error", "message": f"ralph.sh not found at {ralph}"})
         return 1
 
-    env = os.environ.copy()
-    env["AUTO_EDIT_REPO_ROOT"] = str(ralph.parent.resolve())
-    env["AUTO_EDIT_LANGUAGE"] = language
-    env.setdefault("AUTO_EDIT_LLM", "claude")
-    env["PYTHON"] = os.environ.get("PYTHON", __import__("sys").executable)
+    env = _ralph_env(ralph, language)
     if dry_run:
         env["AUTO_EDIT_DRY_RUN"] = "1"
     if overlays_dir:

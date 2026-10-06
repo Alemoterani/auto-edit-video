@@ -521,3 +521,64 @@ def test_sse_formats_events():
     out = list(api._sse([{"type": "log", "line": "x"}, {"type": "done"}]))
     assert out[0] == 'data: {"type": "log", "line": "x"}\n\n'
     assert out[1] == 'data: {"type": "done"}\n\n'
+
+
+# ── open_artifact (abrir no sistema) ──────────────────────────────────────────
+
+class TestOpenArtifact:
+    def _setup(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(engine, "library_root", lambda: tmp_path)
+        _mkws(tmp_path, "vid", video_name="clip")
+        (tmp_path / "output").mkdir()
+        video = tmp_path / "output" / "clip_final.mp4"
+        video.write_bytes(b"x")
+        return video
+
+    def test_opens_with_the_default_app(self, tmp_path, monkeypatch):
+        video = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(engine.sys, "platform", "darwin")
+        calls = []
+        assert engine.open_artifact("vid", "video", run=lambda cmd, **k: calls.append(cmd)) == video
+        assert calls == [["open", str(video)]]
+
+    def test_reveal_selects_in_the_folder(self, tmp_path, monkeypatch):
+        video = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(engine.sys, "platform", "darwin")
+        calls = []
+        engine.open_artifact("vid", "video", reveal=True, run=lambda cmd, **k: calls.append(cmd))
+        assert calls == [["open", "-R", str(video)]]
+
+    def test_windows_reveal(self, tmp_path, monkeypatch):
+        video = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(engine.sys, "platform", "win32")
+        calls = []
+        engine.open_artifact("vid", "video", reveal=True, run=lambda cmd, **k: calls.append(cmd))
+        assert calls == [["explorer", f"/select,{video}"]]
+
+    def test_missing_file_opens_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(engine, "library_root", lambda: tmp_path)
+        _mkws(tmp_path, "vid")
+        calls = []
+        assert engine.open_artifact("vid", "video", run=lambda cmd, **k: calls.append(cmd)) is None
+        assert engine.open_artifact("vid", "secrets", run=lambda cmd, **k: calls.append(cmd)) is None
+        assert calls == []
+
+    def test_endpoint_404s_missing(self, tmp_path, monkeypatch):
+        pytest.importorskip("flask")
+        monkeypatch.setenv("AUTO_EDIT_WORKSPACE", str(tmp_path))
+        _mkws(tmp_path, "vid")
+        r = api.create_app().test_client().post("/api/videos/vid/open/video", json={})
+        assert r.status_code == 404
+
+
+def test_file_endpoint_with_relative_library_root(tmp_path, monkeypatch):
+    """The default library root is relative ("workspace"); send_file would
+    resolve it against the auto_edit package and 500 with FileNotFoundError."""
+    pytest.importorskip("flask")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AUTO_EDIT_WORKSPACE", "workspace")
+    _mkws(tmp_path / "workspace", "vid", video_name="clip")
+    (tmp_path / "workspace" / "output").mkdir()
+    (tmp_path / "workspace" / "output" / "clip_thumbnail.png").write_bytes(b"png")
+    r = api.create_app().test_client().get("/api/videos/vid/file/thumbnail")
+    assert r.status_code == 200 and r.data == b"png"
